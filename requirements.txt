@@ -1,0 +1,14 @@
+streamlit
+groq
+python-dotenv
+easyocr
+plotly
+networkx
+pandas
+numpy
+opencv-python
+pillow
+torch
+torchvision
+scikit-image
+imageio

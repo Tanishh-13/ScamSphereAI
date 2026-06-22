@@ -1,0 +1,23 @@
+[
+    {
+        "complaint_id": "C001",
+        "phone_numbers": ["9999999999"],
+        "upi_ids": ["fraud@ybl"],
+        "urls": [],
+        "scam_type": "Digital Arrest Scam"
+    },
+    {
+        "complaint_id": "C002",
+        "phone_numbers": ["8888888888"],
+        "upi_ids": ["fraud@ybl"],
+        "urls": [],
+        "scam_type": "Digital Arrest Scam"
+    },
+    {
+        "complaint_id": "C003",
+        "phone_numbers": ["9999999999"],
+        "upi_ids": ["crime@paytm"],
+        "urls": [],
+        "scam_type": "Digital Arrest Scam"
+    }
+]
