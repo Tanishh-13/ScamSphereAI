@@ -12,3 +12,4 @@ torch
 torchvision
 scikit-image
 imageio
+psycopg2-binary

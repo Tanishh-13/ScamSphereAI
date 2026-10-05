@@ -2,49 +2,94 @@ import networkx as nx
 import plotly.graph_objects as go
 
 
-def build_graph(current_data, connected_cases):
+# =========================================================
+# BUILD EVIDENCE GRAPH
+# =========================================================
+
+def build_graph(
+    current_data,
+    connected_cases
+):
 
     graph = nx.Graph()
 
-    # Current complaint node
+    current_node = "CURRENT COMPLAINT"
+
+    # -----------------------------------------------------
+    # Current complaint
+    # -----------------------------------------------------
+
     graph.add_node(
-        "Current Complaint",
-        node_type="complaint"
+        current_node,
+        node_type="complaint",
+        label="Current Complaint",
+        occurrence_count=1
     )
 
-    # Current complaint phones
+    # -----------------------------------------------------
+    # Helper: add evidence node
+    # -----------------------------------------------------
+
+    def add_evidence(
+        value,
+        evidence_type,
+        parent
+    ):
+
+        graph.add_node(
+            value,
+            node_type=evidence_type,
+            label=str(value)
+        )
+
+        graph.add_edge(
+            parent,
+            value,
+            relationship=evidence_type,
+            weight=1
+        )
+
+    # -----------------------------------------------------
+    # Current evidence
+    # -----------------------------------------------------
+
     for phone in current_data.get(
         "phone_numbers",
         []
     ):
 
-        graph.add_node(
+        add_evidence(
             phone,
-            node_type="phone"
+            "phone",
+            current_node
         )
 
-        graph.add_edge(
-            "Current Complaint",
-            phone
-        )
-
-    # Current complaint UPI IDs
     for upi in current_data.get(
         "upi_ids",
         []
     ):
 
-        graph.add_node(
+        add_evidence(
             upi,
-            node_type="upi"
+            "upi",
+            current_node
         )
 
-        graph.add_edge(
-            "Current Complaint",
-            upi
+    for url in current_data.get(
+        "urls",
+        []
+    ):
+
+        add_evidence(
+            url,
+            "url",
+            current_node
         )
 
-    # Connected cases
+    # -----------------------------------------------------
+    # Previous connected complaints
+    # -----------------------------------------------------
+
     for case in connected_cases:
 
         case_id = case.get(
@@ -52,77 +97,128 @@ def build_graph(current_data, connected_cases):
             "UNKNOWN"
         )
 
+        occurrence_count = case.get(
+            "occurrence_count",
+            1
+        )
+
+        connection_score = case.get(
+            "connection_score",
+            0
+        )
+
+        matching_entities = case.get(
+            "matching_entities",
+            []
+        )
+
+        # -------------------------------------------------
+        # Case node
+        # -------------------------------------------------
+
         graph.add_node(
             case_id,
-            node_type="case"
+            node_type="case",
+            label=case_id,
+            occurrence_count=occurrence_count,
+            risk_score=case.get(
+                "risk_score",
+                0
+            ),
+            severity=case.get(
+                "severity",
+                "UNKNOWN"
+            )
         )
+
+        # -------------------------------------------------
+        # Connection to current complaint
+        # -------------------------------------------------
 
         graph.add_edge(
-            "Current Complaint",
-            case_id
+            current_node,
+            case_id,
+            relationship=", ".join(
+                matching_entities
+            ),
+            weight=connection_score
         )
 
-        # Case phones
+        # -------------------------------------------------
+        # Case evidence
+        # -------------------------------------------------
+
         for phone in case.get(
             "phone_numbers",
             []
         ):
 
-            graph.add_node(
+            add_evidence(
                 phone,
-                node_type="phone"
+                "phone",
+                case_id
             )
 
-            graph.add_edge(
-                case_id,
-                phone
-            )
-
-        # Case UPI IDs
         for upi in case.get(
             "upi_ids",
             []
         ):
 
-            graph.add_node(
+            add_evidence(
                 upi,
-                node_type="upi"
+                "upi",
+                case_id
             )
 
-            graph.add_edge(
-                case_id,
-                upi
+        for url in case.get(
+            "urls",
+            []
+        ):
+
+            add_evidence(
+                url,
+                "url",
+                case_id
             )
 
     return graph
 
 
+# =========================================================
+# VISUALIZE GRAPH
+# =========================================================
+
 def visualize_graph(graph):
 
-    nodes = list(graph.nodes())
+    if len(graph.nodes) == 0:
 
-    node_positions = {}
+        return go.Figure()
 
-    # Manual layout
-    for index, node in enumerate(nodes):
+    # -----------------------------------------------------
+    # NetworkX force-directed layout
+    # -----------------------------------------------------
 
-        node_positions[node] = (
-            index * 2,
-            0
-        )
+    positions = nx.spring_layout(
+        graph,
+        seed=42,
+        k=1.8,
+        iterations=100
+    )
+
+    # =====================================================
+    # EDGES
+    # =====================================================
 
     edge_x = []
     edge_y = []
+    edge_hover = []
 
-    for edge in graph.edges():
+    for u, v, data in graph.edges(
+        data=True
+    ):
 
-        x0, y0 = node_positions[
-            edge[0]
-        ]
-
-        x1, y1 = node_positions[
-            edge[1]
-        ]
+        x0, y0 = positions[u]
+        x1, y1 = positions[v]
 
         edge_x.extend(
             [x0, x1, None]
@@ -132,39 +228,163 @@ def visualize_graph(graph):
             [y0, y1, None]
         )
 
+        relationship = data.get(
+            "relationship",
+            "connected"
+        )
+
+        weight = data.get(
+            "weight",
+            1
+        )
+
+        edge_hover.append(
+            f"{u} → {v}<br>"
+            f"Relationship: {relationship}<br>"
+            f"Strength: {weight}"
+        )
+
     edge_trace = go.Scatter(
         x=edge_x,
         y=edge_y,
         mode="lines",
+        line=dict(
+            width=1
+        ),
         hoverinfo="none"
     )
+
+    # =====================================================
+    # NODES
+    # =====================================================
 
     node_x = []
     node_y = []
     node_text = []
+    node_hover = []
+    node_sizes = []
 
-    for node in nodes:
+    for node, data in graph.nodes(
+        data=True
+    ):
 
-        x, y = node_positions[node]
+        x, y = positions[node]
 
         node_x.append(x)
         node_y.append(y)
 
-        node_text.append(
+        node_type = data.get(
+            "node_type",
+            "unknown"
+        )
+
+        occurrence_count = data.get(
+            "occurrence_count",
+            1
+        )
+
+        risk_score = data.get(
+            "risk_score",
+            None
+        )
+
+        # -------------------------------------------------
+        # Display label
+        # -------------------------------------------------
+
+        label = data.get(
+            "label",
             str(node)
         )
+
+        # Keep long URLs from destroying the graph
+        if len(str(label)) > 25:
+
+            label = (
+                str(label)[:22]
+                + "..."
+            )
+
+        node_text.append(
+            str(label)
+        )
+
+        # -------------------------------------------------
+        # Hover information
+        # -------------------------------------------------
+
+        hover = (
+            f"<b>{node}</b><br>"
+            f"Type: {node_type}"
+        )
+
+        if occurrence_count:
+
+            hover += (
+                f"<br>Occurrences: "
+                f"{occurrence_count}"
+            )
+
+        if risk_score is not None:
+
+            hover += (
+                f"<br>Risk Score: "
+                f"{risk_score}"
+            )
+
+        node_hover.append(
+            hover
+        )
+
+        # -------------------------------------------------
+        # Node size
+        # -------------------------------------------------
+
+        if node_type == "complaint":
+
+            size = 35
+
+        elif node_type == "case":
+
+            size = min(
+                25 + occurrence_count * 3,
+                50
+            )
+
+        else:
+
+            size = 22
+
+        node_sizes.append(size)
+
+    # =====================================================
+    # NODE TRACE
+    # =====================================================
 
     node_trace = go.Scatter(
         x=node_x,
         y=node_y,
         mode="markers+text",
+
         text=node_text,
+
         textposition="top center",
+
+        hovertext=node_hover,
+
         hoverinfo="text",
+
         marker=dict(
-            size=25
+            size=node_sizes,
+            line=dict(
+                width=1
+            )
         )
     )
+
+    # =====================================================
+    # FIGURE
+    # =====================================================
 
     fig = go.Figure(
         data=[
@@ -174,9 +394,33 @@ def visualize_graph(graph):
     )
 
     fig.update_layout(
-        title="Fraud Intelligence Network",
+
+        title="Live Fraud Evidence Network",
+
         showlegend=False,
-        hovermode="closest"
+
+        hovermode="closest",
+
+        margin=dict(
+            l=20,
+            r=20,
+            t=60,
+            b=20
+        ),
+
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False
+        ),
+
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False
+        ),
+
+        plot_bgcolor="white"
     )
 
     return fig

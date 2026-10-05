@@ -1,13 +1,10 @@
 venv/
 __pycache__/
 *.pyc
-
 .env
-
 temp.png
 temp.jpg
 temp.jpeg
-
 .streamlit/secrets.toml
-
 .DS_Store
+.env
