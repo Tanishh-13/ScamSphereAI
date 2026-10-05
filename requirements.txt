@@ -6,7 +6,7 @@ plotly
 networkx
 pandas
 numpy
-opencv-python
+opencv-python-headless
 pillow
 torch
 torchvision
