@@ -6,7 +6,44 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ============================================================
+# DATABASE URL
+# ============================================================
+
+def get_database_url():
+    """
+    Get DATABASE_URL in a way that works both locally
+    and on Streamlit Cloud.
+
+    Priority:
+        1. Streamlit secrets
+        2. Environment variable / .env
+    """
+
+    # Streamlit Cloud
+    try:
+        import streamlit as st
+
+        database_url = st.secrets.get("DATABASE_URL")
+
+        if database_url:
+            return str(database_url).strip()
+
+    except Exception:
+        # Streamlit is unavailable when running outside Streamlit
+        pass
+
+    # Local development / .env
+    database_url = os.getenv("DATABASE_URL")
+
+    if database_url:
+        return database_url.strip()
+
+    raise RuntimeError(
+        "DATABASE_URL is not configured. "
+        "Add DATABASE_URL to Streamlit Secrets or your local .env file."
+    )
 
 
 # ============================================================
@@ -14,7 +51,27 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # ============================================================
 
 def get_connection():
-    return psycopg2.connect(DATABASE_URL)
+
+    database_url = get_database_url()
+
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is empty."
+        )
+
+    # Prevent the confusing localhost PostgreSQL fallback.
+    if database_url.startswith("postgresql://") or \
+       database_url.startswith("postgres://"):
+
+        return psycopg2.connect(
+            database_url,
+            sslmode="require",
+            connect_timeout=15
+        )
+
+    raise RuntimeError(
+        "DATABASE_URL does not appear to be a valid PostgreSQL URL."
+    )
 
 
 # ============================================================
@@ -29,6 +86,7 @@ def init_db():
     # Create the complete complaints table if it does not exist.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS complaints (
+
             id SERIAL PRIMARY KEY,
 
             complaint_text TEXT NOT NULL,
@@ -58,11 +116,6 @@ def init_db():
 
     # ========================================================
     # MIGRATION SAFETY
-    # ========================================================
-    #
-    # CREATE TABLE IF NOT EXISTS does not modify an existing
-    # table. These ALTER statements make older databases
-    # compatible with the final schema.
     # ========================================================
 
     cur.execute("""
@@ -198,7 +251,7 @@ def generate_fingerprint(extracted):
 
     Raw complaint text is intentionally NOT used.
 
-    Therefore, differently worded complaints containing the same
+    Therefore differently worded complaints containing the same
     core evidence can be recognized as the same scam pattern.
     """
 
@@ -271,17 +324,6 @@ def save_or_increment_complaint(
     complaint_text
 ):
 
-    """
-    Store a suspicious complaint.
-
-    If the exact evidence fingerprint already exists,
-    increment occurrence_count instead of creating
-    another duplicate row.
-
-    Returns:
-        occurrence_count
-    """
-
     fingerprint = generate_fingerprint(
         extracted
     )
@@ -312,72 +354,88 @@ def save_or_increment_complaint(
     if existing:
 
         complaint_id = existing[0]
-        current_count = existing[1] or 1
+        occurrence_count = existing[1] or 1
 
-        new_count = current_count + 1
+        occurrence_count += 1
 
         cur.execute("""
             UPDATE complaints
+
             SET
                 occurrence_count = %s,
                 last_seen = CURRENT_TIMESTAMP,
                 risk_score = %s,
                 severity = %s
+
             WHERE id = %s
+
+            RETURNING occurrence_count
         """, (
-            new_count,
-
-            risk.get(
-                "risk_score",
-                0
-            ),
-
-            risk.get(
-                "severity",
-                "LOW"
-            ),
-
+            occurrence_count,
+            risk.get("risk_score", 0),
+            risk.get("severity", "LOW"),
             complaint_id
         ))
+
+        result = cur.fetchone()
 
         conn.commit()
 
         cur.close()
         conn.close()
 
-        # IMPORTANT:
-        # Return ONLY the count because app.py expects
-        # saved_count to be an integer.
-        return new_count
+        return result[0] if result else occurrence_count
 
     # ========================================================
-    # NEW EVIDENCE PATTERN
+    # NEW PATTERN
     # ========================================================
 
     cur.execute("""
         INSERT INTO complaints (
+
             complaint_text,
             scam_type,
             risk_score,
             severity,
+
             phone_numbers,
             upi_ids,
             urls,
             authority_names,
             amounts,
+
             summary,
             fingerprint,
+
             occurrence_count,
             first_seen,
             last_seen
+
         )
 
         VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            %s, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+
+            %s,
+            %s,
+            %s,
+            %s,
+
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+
+            %s,
+            %s,
+
+            1,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+
         )
 
-        RETURNING id
+        RETURNING occurrence_count
     """, (
 
         complaint_text,
@@ -430,20 +488,18 @@ def save_or_increment_complaint(
         fingerprint
     ))
 
-    cur.fetchone()
+    result = cur.fetchone()
 
     conn.commit()
 
     cur.close()
     conn.close()
 
-    # IMPORTANT:
-    # First occurrence = 1.
-    return 1
+    return result[0] if result else 1
 
 
 # ============================================================
-# FETCH ALL COMPLAINTS
+# GET ALL COMPLAINTS
 # ============================================================
 
 def get_all_complaints():
@@ -475,9 +531,9 @@ def get_all_complaints():
         ORDER BY last_seen DESC
     """)
 
-    rows = cur.fetchall()
+    complaints = cur.fetchall()
 
     cur.close()
     conn.close()
 
-    return rows
+    return complaints
