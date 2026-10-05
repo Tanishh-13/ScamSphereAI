@@ -17,7 +17,7 @@ UPI_PATTERN = re.compile(
 )
 
 URL_PATTERN = re.compile(
-    r'(?:https?://|www\.)[^\s<>"\']+'
+    r'(?:https?://|www\.)[^\s<>"\']+',
     re.IGNORECASE
 )
 
@@ -27,12 +27,7 @@ URL_PATTERN = re.compile(
 # =========================================================
 
 def normalize_phone(phone):
-
-    digits = re.sub(
-        r"\D",
-        "",
-        phone
-    )
+    digits = re.sub(r"\D", "", phone)
 
     # Remove Indian country code
     if digits.startswith("91") and len(digits) == 12:
@@ -45,17 +40,12 @@ def normalize_phone(phone):
 
 
 def normalize_upi(upi):
-
     upi = upi.strip().lower()
 
-    # Basic UPI structure validation
     if "@" not in upi:
         return None
 
-    username, provider = upi.split(
-        "@",
-        1
-    )
+    username, provider = upi.split("@", 1)
 
     if len(username) < 2:
         return None
@@ -67,13 +57,10 @@ def normalize_upi(upi):
 
 
 def normalize_url(url):
-
     url = url.strip()
 
-    # Remove common punctuation accidentally captured
-    url = url.rstrip(
-        ".,!?;:)]}"
-    )
+    # Remove punctuation accidentally captured at the end
+    url = url.rstrip(".,!?;:)]}")
 
     return url
 
@@ -83,19 +70,12 @@ def normalize_url(url):
 # =========================================================
 
 def extract_verified_phones(text):
-
-    matches = re.findall(
-        PHONE_PATTERN,
-        text
-    )
+    matches = re.findall(PHONE_PATTERN, text)
 
     phones = []
 
     for match in matches:
-
-        normalized = normalize_phone(
-            match
-        )
+        normalized = normalize_phone(match)
 
         if normalized and normalized not in phones:
             phones.append(normalized)
@@ -104,19 +84,12 @@ def extract_verified_phones(text):
 
 
 def extract_verified_upis(text):
-
-    matches = re.findall(
-        UPI_PATTERN,
-        text
-    )
+    matches = re.findall(UPI_PATTERN, text)
 
     upis = []
 
     for match in matches:
-
-        normalized = normalize_upi(
-            match
-        )
+        normalized = normalize_upi(match)
 
         if normalized and normalized not in upis:
             upis.append(normalized)
@@ -125,19 +98,12 @@ def extract_verified_upis(text):
 
 
 def extract_verified_urls(text):
-
-    matches = re.findall(
-        URL_PATTERN,
-        text
-    )
+    matches = re.findall(URL_PATTERN, text)
 
     urls = []
 
     for match in matches:
-
-        normalized = normalize_url(
-            match
-        )
+        normalized = normalize_url(match)
 
         if normalized and normalized not in urls:
             urls.append(normalized)
@@ -184,6 +150,10 @@ Text:
 {text}
 """
 
+    # =====================================================
+    # GROQ REQUEST
+    # =====================================================
+
     response = client.chat.completions.create(
         model="openai/gpt-oss-120b",
         temperature=0,
@@ -195,108 +165,106 @@ Text:
         ]
     )
 
-    content = (
-        response
-        .choices[0]
-        .message
-        .content
-    )
+    content = response.choices[0].message.content
 
-    content = content.replace(
-        "```json",
-        ""
-    )
-
-    content = content.replace(
-        "```",
-        ""
-    )
+    if not content:
+        content = ""
 
     content = content.strip()
 
+    # Remove Markdown JSON fences if the model adds them
+    if content.startswith("```json"):
+        content = content[7:]
+
+    elif content.startswith("```"):
+        content = content[3:]
+
+    if content.endswith("```"):
+        content = content[:-3]
+
+    content = content.strip()
+
+    # =====================================================
+    # PARSE LLM JSON
+    # =====================================================
+
     try:
+        extracted = json.loads(content)
 
-        extracted = json.loads(
-            content
-        )
+    except (json.JSONDecodeError, TypeError):
+        extracted = {}
 
-    except json.JSONDecodeError:
-
-        # If the model gives malformed JSON,
-        # don't let the entire application crash.
+    # Make absolutely sure we have a dictionary
+    if not isinstance(extracted, dict):
         extracted = {}
 
     # =====================================================
     # REGEX-VERIFIED ENTITIES
     # =====================================================
 
-    verified_phones = (
-        extract_verified_phones(text)
-    )
-
-    verified_upis = (
-        extract_verified_upis(text)
-    )
-
-    verified_urls = (
-        extract_verified_urls(text)
-    )
+    verified_phones = extract_verified_phones(text)
+    verified_upis = extract_verified_upis(text)
+    verified_urls = extract_verified_urls(text)
 
     # =====================================================
     # IMPORTANT:
+    #
     # Concrete identifiers come from the actual text,
-    # NOT from the LLM's imagination.
+    # NOT from the LLM.
+    #
+    # This prevents the LLM from hallucinating:
+    # - phone numbers
+    # - UPI IDs
+    # - URLs
     # =====================================================
 
-    extracted["phone_numbers"] = (
-        verified_phones
-    )
-
-    extracted["upi_ids"] = (
-        verified_upis
-    )
-
-    extracted["urls"] = (
-        verified_urls
-    )
+    extracted["phone_numbers"] = verified_phones
+    extracted["upi_ids"] = verified_upis
+    extracted["urls"] = verified_urls
 
     # =====================================================
     # SAFETY DEFAULTS
     # =====================================================
 
-    extracted.setdefault(
-        "authority_names",
-        []
-    )
+    extracted.setdefault("authority_names", [])
+    extracted.setdefault("amounts", [])
+    extracted.setdefault("scam_type", "")
+    extracted.setdefault("summary", "")
 
-    extracted.setdefault(
-        "amounts",
-        []
-    )
+    # =====================================================
+    # TYPE VALIDATION
+    # =====================================================
 
-    extracted.setdefault(
-        "scam_type",
-        ""
-    )
+    if not isinstance(
+        extracted.get("authority_names"),
+        list
+    ):
+        extracted["authority_names"] = []
 
-    extracted.setdefault(
-        "summary",
-        ""
-    )
+    if not isinstance(
+        extracted.get("amounts"),
+        list
+    ):
+        extracted["amounts"] = []
 
-    # Make sure list fields are actually lists
-    for field in [
-        "authority_names",
-        "amounts"
-    ]:
+    if not isinstance(
+        extracted.get("phone_numbers"),
+        list
+    ):
+        extracted["phone_numbers"] = verified_phones
 
-        if not isinstance(
-            extracted.get(field),
-            list
-        ):
-            extracted[field] = []
+    if not isinstance(
+        extracted.get("upi_ids"),
+        list
+    ):
+        extracted["upi_ids"] = verified_upis
 
-    # Make sure text fields are strings
+    if not isinstance(
+        extracted.get("urls"),
+        list
+    ):
+        extracted["urls"] = verified_urls
+
     if not isinstance(
         extracted.get("scam_type"),
         str
