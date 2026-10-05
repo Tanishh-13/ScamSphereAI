@@ -1,4 +1,21 @@
-import re
+# ============================================================
+# DETERMINISTIC RISK ENGINE
+# ============================================================
+#
+# The LLM is NOT responsible for calculating the final risk.
+#
+# LLM responsibility:
+#   Extract structured evidence from the complaint.
+#
+# Risk engine responsibility:
+#   Calculate risk using:
+#       1. Extracted evidence
+#       2. Behavioural indicators
+#       3. Historical database connections
+#       4. Repeated occurrence frequency
+#
+# This makes the final score reproducible and explainable.
+# ============================================================
 
 
 # ============================================================
@@ -98,30 +115,34 @@ def calculate_risk(
     Deterministic evidence-based risk engine.
 
     The LLM is ONLY responsible for extracting structured
-    evidence. It does NOT directly decide the final score.
+    evidence.
 
-    Risk is calculated from:
+    The final risk score is calculated by deterministic
+    application logic.
 
-    1. Hard evidence
+    Risk sources:
+
+    1. Direct evidence
        - phone
        - UPI
        - URL
-       - money amount
-       - authority impersonation
+       - financial amount
+       - authority reference
 
     2. Behavioural indicators
        - digital arrest
-       - banking/KYC
+       - banking/KYC fraud
        - payment requests
        - urgency
        - threats
 
-    3. Historical evidence
-       - previous complaints sharing identifiers
+    3. Historical database evidence
+       - shared identifiers
+       - previous complaints
        - repeated scam patterns
        - occurrence frequency
 
-    The final score is capped at 100.
+    The score is capped at 100.
     """
 
     score = 0
@@ -174,9 +195,11 @@ def calculate_risk(
         f"{summary}"
     )
 
+    connections = connections or []
+
 
     # ========================================================
-    # 1. HARD EVIDENCE
+    # 1. DIRECT EVIDENCE
     # ========================================================
 
     if phones:
@@ -291,8 +314,25 @@ def calculate_risk(
     # ========================================================
     # 3. HISTORICAL DATABASE EVIDENCE
     # ========================================================
+    #
+    # `connections` comes from the database-backed cluster
+    # agent.
+    #
+    # Therefore this section is NOT based on an LLM guess.
+    #
+    # Example:
+    #
+    # Current complaint
+    #       |
+    #       +---- same phone ---- Case #12
+    #       |
+    #       +---- same UPI ------ Case #27
+    #
+    # The connection scores were already calculated from
+    # shared evidence.
+    # ========================================================
 
-    connections = connections or []
+    strongest_connection_score = 0
 
     if connections:
 
@@ -304,12 +344,18 @@ def calculate_risk(
             )
         )
 
-        strongest_score = strongest_connection.get(
-            "connection_score",
-            0
+        strongest_connection_score = (
+            strongest_connection.get(
+                "connection_score",
+                0
+            )
         )
 
-        if strongest_score >= 80:
+        # ----------------------------------------------------
+        # Strong historical connection
+        # ----------------------------------------------------
+
+        if strongest_connection_score >= 80:
 
             score += 25
 
@@ -317,7 +363,11 @@ def calculate_risk(
                 "Strong evidence links this complaint to a previously reported scam pattern."
             )
 
-        elif strongest_score >= 50:
+        # ----------------------------------------------------
+        # Moderate historical connection
+        # ----------------------------------------------------
+
+        elif strongest_connection_score >= 50:
 
             score += 15
 
@@ -325,7 +375,11 @@ def calculate_risk(
                 "The complaint shares important identifiers with previous scam reports."
             )
 
-        elif strongest_score >= 20:
+        # ----------------------------------------------------
+        # Weak but meaningful connection
+        # ----------------------------------------------------
+
+        elif strongest_connection_score >= 20:
 
             score += 8
 
@@ -334,9 +388,9 @@ def calculate_risk(
             )
 
 
-        # ----------------------------------------------------
-        # Repeated occurrence evidence
-        # ----------------------------------------------------
+        # ====================================================
+        # REPEATED OCCURRENCE EVIDENCE
+        # ====================================================
 
         max_occurrences = max(
             (
@@ -349,20 +403,24 @@ def calculate_risk(
             default=1
         )
 
+        # Repeated many times
         if max_occurrences >= 5:
 
             score += 15
 
             reasons.append(
-                f"This scam pattern has been reported repeatedly ({max_occurrences} occurrences)."
+                f"This scam pattern has been reported repeatedly "
+                f"({max_occurrences} occurrences)."
             )
 
+        # Repeated several times
         elif max_occurrences >= 3:
 
             score += 10
 
             reasons.append(
-                f"This scam pattern has appeared {max_occurrences} times in the database."
+                f"This scam pattern has appeared "
+                f"{max_occurrences} times in the database."
             )
 
 
@@ -398,7 +456,7 @@ def calculate_risk(
 
 
     # ========================================================
-    # 6. VERDICT
+    # 6. USER-FACING VERDICT
     # ========================================================
 
     if score >= 60:
@@ -417,12 +475,45 @@ def calculate_risk(
     # ========================================================
     # 7. DATABASE STORAGE DECISION
     # ========================================================
-
-    # Only suspicious/high-risk complaints enter the
-    # persistent intelligence database.
+    #
+    # We only persist complaints that contain enough evidence
+    # to be useful to the fraud-intelligence database.
+    #
+    # This prevents ordinary harmless messages from polluting
+    # the historical evidence graph.
+    # ========================================================
 
     should_store = score >= 40
 
+
+    # ========================================================
+    # 8. STRUCTURED EVIDENCE SUMMARY
+    # ========================================================
+
+    evidence_summary = {
+
+        "phones": len(phones),
+
+        "upi_ids": len(upis),
+
+        "urls": len(urls),
+
+        "amounts": len(amounts),
+
+        "authorities": len(authorities),
+
+        "historical_connections": len(
+            connections
+        ),
+
+        "strongest_connection_score":
+            strongest_connection_score
+    }
+
+
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
 
     return {
 
@@ -436,20 +527,5 @@ def calculate_risk(
 
         "reasons": reasons,
 
-        "evidence_summary": {
-
-            "phones": len(phones),
-
-            "upi_ids": len(upis),
-
-            "urls": len(urls),
-
-            "amounts": len(amounts),
-
-            "authorities": len(authorities),
-
-            "historical_connections": len(
-                connections
-            )
-        }
+        "evidence_summary": evidence_summary
     }

@@ -1,24 +1,23 @@
 import os
 import tempfile
-
 import streamlit as st
-
+from utils.ocr import extract_text_from_image
 from utils.db import (
     init_db,
     save_or_increment_complaint
 )
-
-from utils.ocr import extract_text_from_image
-
 from agents.extraction_agent import extract_entities
 from agents.risk_agent import calculate_risk
 from agents.cluster_agent import find_connections
-from agents.graph_agent import build_graph, visualize_graph
+from agents.graph_agent import (
+    build_graph,
+    visualize_graph
+)
 from agents.copilot_agent import ask_copilot
 
 
 # ============================================================
-# PAGE CONFIG
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -34,33 +33,27 @@ st.set_page_config(
 
 try:
     init_db()
+    database_ready = True
 except Exception as e:
-    st.error("Could not connect to the ScamSphere database.")
-    st.caption(str(e))
-    st.stop()
+    database_ready = False
+    db_error = str(e)
 
 
 # ============================================================
 # SESSION STATE
 # ============================================================
 
-if "extracted" not in st.session_state:
-    st.session_state.extracted = None
-
-if "risk" not in st.session_state:
-    st.session_state.risk = None
-
-if "connections" not in st.session_state:
-    st.session_state.connections = []
+if "analysis" not in st.session_state:
+    st.session_state.analysis = None
 
 if "complaint_text" not in st.session_state:
     st.session_state.complaint_text = ""
 
-if "stored" not in st.session_state:
-    st.session_state.stored = False
+if "copilot_answer" not in st.session_state:
+    st.session_state.copilot_answer = None
 
-if "occurrence_count" not in st.session_state:
-    st.session_state.occurrence_count = None
+if "saved_count" not in st.session_state:
+    st.session_state.saved_count = None
 
 
 # ============================================================
@@ -68,24 +61,45 @@ if "occurrence_count" not in st.session_state:
 # ============================================================
 
 st.title("🛡️ ScamSphere AI")
-st.subheader("Fraud Campaign Intelligence Platform")
+st.subheader(
+    "Fraud Campaign Intelligence Platform"
+)
 
 st.caption(
-    "Analyze suspicious messages, identify evidence, "
-    "detect links to previous scam campaigns, and visualize "
-    "fraud networks."
+    "Evidence-driven scam detection using structured evidence, "
+    "historical complaint data, and fraud-network analysis."
 )
+
+
+if not database_ready:
+
+    st.error(
+        "⚠️ Database connection failed."
+    )
+
+    st.code(
+        db_error
+    )
+
+    st.info(
+        "Check your DATABASE_URL and PostgreSQL connection "
+        "before continuing."
+    )
+
+    st.stop()
 
 
 # ============================================================
 # TABS
 # ============================================================
 
-tab1, tab2, tab3 = st.tabs([
-    "🔍 Complaint Analysis",
-    "🕸️ Fraud Network",
-    "🤖 AI Copilot"
-])
+tab1, tab2, tab3 = st.tabs(
+    [
+        "🔎 Complaint Analysis",
+        "🕸️ Fraud Network",
+        "🤖 AI Copilot"
+    ]
+)
 
 
 # ============================================================
@@ -94,30 +108,38 @@ tab1, tab2, tab3 = st.tabs([
 
 with tab1:
 
-    st.header("Analyze Suspicious Content")
+    st.header(
+        "🔎 Analyze Suspicious Content"
+    )
 
     st.write(
         "Paste a suspicious message or upload a screenshot. "
-        "ScamSphere extracts structured evidence and checks it "
-        "against previously identified scam patterns."
+        "ScamSphere extracts evidence, checks it against "
+        "previously reported cases, and calculates a "
+        "deterministic risk score."
     )
 
     complaint_input = st.text_area(
         "Suspicious message",
-        height=150,
+        height=180,
         placeholder=(
-            "Example: Your bank account will be blocked. "
-            "Contact this officer immediately and transfer ₹50,000..."
+            "Example:\n"
+            "This is a message from CBI. Your bank account "
+            "will be blocked unless you pay ₹25,000 immediately..."
         )
     )
 
     uploaded_file = st.file_uploader(
         "Or upload a screenshot",
-        type=["png", "jpg", "jpeg"]
+        type=[
+            "png",
+            "jpg",
+            "jpeg"
+        ]
     )
 
     analyze_button = st.button(
-        "🔎 Analyze Complaint",
+        "🔍 Analyze Complaint",
         type="primary",
         use_container_width=True
     )
@@ -129,254 +151,307 @@ with tab1:
 
     if analyze_button:
 
-        if not complaint_input.strip() and not uploaded_file:
-
-            st.warning(
-                "Please enter a suspicious message or upload a screenshot."
-            )
-
-        else:
-
-            complaint_text = complaint_input.strip()
+        complaint = complaint_input.strip()
 
 
-            # ------------------------------------------------
-            # OCR
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # OCR
+        # ----------------------------------------------------
 
-            if uploaded_file:
+        if uploaded_file:
+
+            try:
 
                 file_extension = (
-                    uploaded_file.name.split(".")[-1]
+                    uploaded_file.name
+                    .split(".")[-1]
+                    .lower()
                 )
 
-                temp_path = None
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    suffix=f".{file_extension}"
+                ) as temp_file:
+
+                    temp_file.write(
+                        uploaded_file.getbuffer()
+                    )
+
+                    temp_path = temp_file.name
+
+
+                with st.spinner(
+                    "Reading screenshot..."
+                ):
+
+                    complaint = extract_text_from_image(
+                        temp_path
+                    )
+
 
                 try:
-
-                    with tempfile.NamedTemporaryFile(
-                        delete=False,
-                        suffix=f".{file_extension}"
-                    ) as temp_file:
-
-                        temp_file.write(
-                            uploaded_file.getbuffer()
-                        )
-
-                        temp_path = temp_file.name
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
 
-                    with st.spinner(
-                        "Extracting text from screenshot..."
-                    ):
-
-                        complaint_text = extract_text_from_image(
-                            temp_path
-                        )
+                if complaint:
 
                     st.success(
                         "Screenshot processed successfully."
                     )
 
-                finally:
+                    with st.expander(
+                        "📄 View extracted text"
+                    ):
 
-                    if temp_path and os.path.exists(temp_path):
-                        os.remove(temp_path)
+                        st.write(
+                            complaint
+                        )
+
+                else:
+
+                    st.error(
+                        "Could not extract readable text "
+                        "from the screenshot."
+                    )
+
+                    st.stop()
 
 
-            if not complaint_text.strip():
+            except Exception as e:
 
                 st.error(
-                    "No readable text was found in the input."
+                    "OCR processing failed."
                 )
+
+                st.exception(e)
+
                 st.stop()
 
 
-            # ------------------------------------------------
-            # SAVE RAW TEXT IN SESSION
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # Validate input
+        # ----------------------------------------------------
 
-            st.session_state.complaint_text = complaint_text
+        if not complaint:
+
+            st.warning(
+                "Please enter a suspicious message "
+                "or upload a screenshot."
+            )
+
+            st.stop()
 
 
-            # ------------------------------------------------
-            # ENTITY EXTRACTION
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # COMPLETE INTELLIGENCE PIPELINE
+        # ----------------------------------------------------
+
+        try:
 
             with st.spinner(
-                "Extracting threat intelligence..."
+                "Analyzing evidence and historical cases..."
             ):
+
+                # ============================================
+                # STEP 1 — LLM EXTRACTION
+                # ============================================
 
                 extracted = extract_entities(
-                    complaint_text
+                    complaint
                 )
 
 
-            # ------------------------------------------------
-            # DETERMINISTIC RISK ANALYSIS
-            # ------------------------------------------------
-            #
-            # IMPORTANT:
-            # The risk score is NOT generated by the LLM.
-            #
-            # The LLM only extracts structured evidence.
-            #
-            # risk_agent.py calculates the score using:
-            # phones, UPI IDs, URLs, amounts, authorities,
-            # scam language, urgency, threats, etc.
-            # ------------------------------------------------
-
-            with st.spinner(
-                "Calculating evidence-based risk..."
-            ):
-
-                risk = calculate_risk(
-                    extracted,
-                    complaint_text
-                )
-
-
-            # ------------------------------------------------
-            # DATABASE / CAMPAIGN LOOKUP
-            # ------------------------------------------------
-            #
-            # IMPORTANT:
-            # We check the existing database BEFORE inserting
-            # the current complaint.
-            #
-            # Therefore connections represent links to
-            # previously stored high-risk scam patterns.
-            # ------------------------------------------------
-
-            with st.spinner(
-                "Checking previous scam campaigns..."
-            ):
+                # ============================================
+                # STEP 2 — DATABASE / HISTORICAL EVIDENCE
+                # ============================================
 
                 connections = find_connections(
                     extracted
                 )
 
 
-            # ------------------------------------------------
-            # SAVE ONLY HIGH-RISK CASES
-            # ------------------------------------------------
-            #
-            # Low-risk / ordinary messages are NOT added to
-            # the fraud intelligence database.
-            #
-            # HIGH + CRITICAL cases become intelligence.
-            # ------------------------------------------------
+                # ============================================
+                # STEP 3 — DETERMINISTIC RISK ENGINE
+                #
+                # IMPORTANT:
+                # The LLM does NOT generate the risk score.
+                #
+                # Risk is calculated from:
+                # - extracted evidence
+                # - raw complaint text
+                # - historical DB connections
+                # - occurrence frequency
+                # ============================================
 
-            should_store = risk["severity"] in [
-                "HIGH",
-                "CRITICAL"
-            ]
+                risk = calculate_risk(
+                    extracted_data=extracted,
+                    raw_text=complaint,
+                    connections=connections
+                )
 
-            occurrence_count = None
 
-            if should_store:
+                # ============================================
+                # STEP 4 — PERSISTENCE
+                #
+                # Only meaningful/suspicious complaints are
+                # stored in the intelligence database.
+                #
+                # Existing evidence fingerprints increment
+                # occurrence_count rather than creating
+                # duplicate records.
+                # ============================================
 
-                with st.spinner(
-                    "Updating fraud intelligence database..."
+                saved_count = None
+
+                if risk.get(
+                    "should_store",
+                    False
                 ):
 
-                    occurrence_count = (
+                    saved_count = (
                         save_or_increment_complaint(
-                            extracted,
-                            risk,
-                            complaint_text
+                            extracted=extracted,
+                            risk=risk,
+                            complaint_text=complaint
                         )
                     )
 
-                st.session_state.stored = True
-                st.session_state.occurrence_count = (
-                    occurrence_count
-                )
 
-            else:
+                # ============================================
+                # STEP 5 — STORE RESULT IN SESSION
+                # ============================================
 
-                st.session_state.stored = False
-                st.session_state.occurrence_count = None
+                st.session_state.analysis = {
+
+                    "complaint": complaint,
+
+                    "extracted": extracted,
+
+                    "connections": connections,
+
+                    "risk": risk,
+
+                    "saved_count": saved_count
+
+                }
+
+                st.session_state.complaint_text = complaint
+
+                st.session_state.saved_count = saved_count
+
+                st.session_state.copilot_answer = None
 
 
-            # ------------------------------------------------
-            # UPDATE SESSION STATE
-            # ------------------------------------------------
+        except Exception as e:
 
-            st.session_state.extracted = extracted
-            st.session_state.risk = risk
-            st.session_state.connections = connections
+            st.error(
+                "❌ Analysis pipeline failed."
+            )
+
+            st.exception(e)
+
+            st.stop()
 
 
     # ========================================================
     # DISPLAY RESULTS
     # ========================================================
 
-    if st.session_state.extracted:
+    analysis = st.session_state.analysis
 
-        extracted = st.session_state.extracted
-        risk = st.session_state.risk
-        connections = st.session_state.connections
+
+    if analysis:
+
+        extracted = analysis["extracted"]
+
+        connections = analysis["connections"]
+
+        risk = analysis["risk"]
+
+        saved_count = analysis["saved_count"]
 
 
         # ====================================================
-        # VERDICT
+        # TOP VERDICT
         # ====================================================
 
         st.divider()
 
-        st.header("🚨 Threat Assessment")
+        st.subheader(
+            "🚨 Scam Assessment"
+        )
 
 
-        score = risk["risk_score"]
-        severity = risk["severity"]
+        score = risk.get(
+            "risk_score",
+            0
+        )
+
+        severity = risk.get(
+            "severity",
+            "LOW"
+        )
+
+        verdict = risk.get(
+            "verdict",
+            "LOW RISK"
+        )
 
 
-        # Friendly verdict for everyone
-        if severity == "CRITICAL":
+        if score >= 80:
 
-            verdict = "🚨 HIGHLY LIKELY SCAM"
-            verdict_help = (
-                "Strong evidence indicates that this message "
-                "is associated with fraudulent activity."
+            st.error(
+                f"🚨 {verdict}"
             )
 
-        elif severity == "HIGH":
-
-            verdict = "⚠️ POTENTIAL SCAM"
-            verdict_help = (
-                "Multiple scam indicators were detected. "
-                "Treat this message as suspicious."
+            st.error(
+                "This complaint contains strong scam indicators "
+                "and/or strong historical links to known patterns."
             )
 
-        elif severity == "MEDIUM":
+        elif score >= 60:
 
-            verdict = "🟠 SUSPICIOUS"
-            verdict_help = (
-                "Some suspicious characteristics were found, "
-                "but the evidence is not strong enough to "
-                "classify it as a likely scam."
+            st.warning(
+                f"⚠️ {verdict}"
+            )
+
+            st.warning(
+                "Multiple indicators suggest that this "
+                "message may be part of a fraudulent activity."
+            )
+
+        elif score >= 40:
+
+            st.warning(
+                f"⚠️ {verdict}"
+            )
+
+            st.info(
+                "Some suspicious indicators were detected. "
+                "Treat the message carefully and verify the "
+                "sender independently."
             )
 
         else:
 
-            verdict = "🟢 LOW RISK"
-            verdict_help = (
-                "Few known scam indicators were detected. "
-                "Still remain cautious with unexpected requests."
+            st.success(
+                f"✅ {verdict}"
+            )
+
+            st.info(
+                "The current evidence does not strongly indicate "
+                "a scam. Continue to exercise normal caution."
             )
 
 
-        st.subheader(verdict)
-
-        st.write(verdict_help)
-
-
         # ====================================================
-        # SCORE DISPLAY
+        # SCORE METRICS
         # ====================================================
 
         col1, col2, col3 = st.columns(3)
+
 
         with col1:
 
@@ -385,6 +460,7 @@ with tab1:
                 f"{score}/100"
             )
 
+
         with col2:
 
             st.metric(
@@ -392,10 +468,11 @@ with tab1:
                 severity
             )
 
+
         with col3:
 
             st.metric(
-                "Campaign Links",
+                "Historical Connections",
                 len(connections)
             )
 
@@ -409,77 +486,47 @@ with tab1:
         # WHAT SHOULD THE USER DO?
         # ====================================================
 
-        if severity in ["HIGH", "CRITICAL"]:
+        st.subheader(
+            "🧭 What should you do?"
+        )
+
+
+        if score >= 60:
 
             st.error(
-                "🛑 Recommended action: "
-                "Do not send money, share OTPs/passwords, "
-                "or follow payment instructions."
+                """
+                **Do not send money or share sensitive information.**
+
+                • Do not share OTPs, passwords, PINs or banking details.  
+                • Do not click suspicious links.  
+                • Do not install software requested by the caller.  
+                • Independently contact your bank or the relevant authority.  
+                • Preserve screenshots, phone numbers, UPI IDs and URLs as evidence.
+                """
             )
 
-            st.info(
-                "If this appears to be a real scam, preserve "
-                "the original message/screenshot and report it "
-                "to the appropriate cybercrime authorities."
-            )
-
-        elif severity == "MEDIUM":
+        elif score >= 40:
 
             st.warning(
-                "⚠️ Be cautious. Verify the sender independently "
-                "before taking any action."
+                """
+                **Be cautious before taking any action.**
+
+                • Verify who contacted you.  
+                • Do not make payments based only on the message.  
+                • Avoid clicking unknown links.  
+                • Keep the original message/screenshot as evidence.
+                """
             )
 
         else:
 
             st.success(
-                "No strong scam indicators were detected. "
-                "However, never share sensitive information "
-                "with unknown senders."
-            )
+                """
+                **No strong scam indicators were detected.**
 
-
-        # ====================================================
-        # DATABASE STATUS
-        # ====================================================
-
-        if st.session_state.stored:
-
-            count = st.session_state.occurrence_count
-
-            st.success(
-                f"📊 This scam pattern is now in the "
-                f"fraud intelligence database. "
-                f"Observed {count} time(s)."
-            )
-
-            if count and count > 1:
-
-                st.warning(
-                    f"🔁 This evidence pattern has appeared "
-                    f"{count} times. Repeated targeting may "
-                    f"indicate an active scam campaign."
-                )
-
-        else:
-
-            st.caption(
-                "This case was not added to the campaign database "
-                "because its risk level did not meet the intelligence "
-                "storage threshold."
-            )
-
-
-        # ====================================================
-        # EXTRACTED TEXT
-        # ====================================================
-
-        with st.expander(
-            "📄 View analyzed message"
-        ):
-
-            st.write(
-                st.session_state.complaint_text
+                Still avoid sharing sensitive information unless you
+                independently trust and verify the sender.
+                """
             )
 
 
@@ -489,7 +536,9 @@ with tab1:
 
         st.divider()
 
-        st.header("🎯 Extracted Threat Intelligence")
+        st.subheader(
+            "🎯 Extracted Threat Intelligence"
+        )
 
 
         col1, col2 = st.columns(2)
@@ -497,13 +546,9 @@ with tab1:
 
         with col1:
 
-            st.write(
+            st.markdown(
                 f"**Scam Type:** "
                 f"{extracted.get('scam_type', 'Unknown')}"
-            )
-
-            st.write(
-                "**Phone Numbers:**"
             )
 
             phones = extracted.get(
@@ -512,15 +557,23 @@ with tab1:
             )
 
             if phones:
+
+                st.markdown(
+                    "**📞 Phone Numbers:**"
+                )
+
                 for phone in phones:
-                    st.code(phone)
+
+                    st.code(
+                        str(phone)
+                    )
+
             else:
-                st.caption("None detected")
 
+                st.markdown(
+                    "**📞 Phone Numbers:** None identified"
+                )
 
-            st.write(
-                "**UPI IDs:**"
-            )
 
             upis = extracted.get(
                 "upi_ids",
@@ -528,15 +581,23 @@ with tab1:
             )
 
             if upis:
+
+                st.markdown(
+                    "**💳 UPI IDs:**"
+                )
+
                 for upi in upis:
-                    st.code(upi)
+
+                    st.code(
+                        str(upi)
+                    )
+
             else:
-                st.caption("None detected")
 
+                st.markdown(
+                    "**💳 UPI IDs:** None identified"
+                )
 
-            st.write(
-                "**URLs:**"
-            )
 
             urls = extracted.get(
                 "urls",
@@ -544,17 +605,25 @@ with tab1:
             )
 
             if urls:
+
+                st.markdown(
+                    "**🔗 URLs:**"
+                )
+
                 for url in urls:
-                    st.code(url)
+
+                    st.code(
+                        str(url)
+                    )
+
             else:
-                st.caption("None detected")
+
+                st.markdown(
+                    "**🔗 URLs:** None identified"
+                )
 
 
         with col2:
-
-            st.write(
-                "**Authorities Mentioned:**"
-            )
 
             authorities = extracted.get(
                 "authority_names",
@@ -562,15 +631,23 @@ with tab1:
             )
 
             if authorities:
+
+                st.markdown(
+                    "**🏛️ Authorities Mentioned:**"
+                )
+
                 for authority in authorities:
-                    st.write(f"• {authority}")
+
+                    st.write(
+                        f"• {authority}"
+                    )
+
             else:
-                st.caption("None detected")
 
+                st.markdown(
+                    "**🏛️ Authorities Mentioned:** None"
+                )
 
-            st.write(
-                "**Amounts:**"
-            )
 
             amounts = extracted.get(
                 "amounts",
@@ -578,14 +655,26 @@ with tab1:
             )
 
             if amounts:
+
+                st.markdown(
+                    "**💰 Amounts:**"
+                )
+
                 for amount in amounts:
-                    st.write(f"• {amount}")
+
+                    st.write(
+                        f"• {amount}"
+                    )
+
             else:
-                st.caption("None detected")
+
+                st.markdown(
+                    "**💰 Amounts:** None identified"
+                )
 
 
-            st.write(
-                "**Summary:**"
+            st.markdown(
+                "**📝 Summary:**"
             )
 
             st.write(
@@ -597,53 +686,137 @@ with tab1:
 
 
         # ====================================================
-        # RISK REASONS
+        # WHY THIS SCORE?
         # ====================================================
 
         st.divider()
 
-        st.header("🧠 Why was this score given?")
+        st.subheader(
+            "🧠 Why did ScamSphere give this score?"
+        )
 
-
-        st.write(
-            "The score is calculated from observable evidence "
-            "and predefined fraud indicators — not directly "
-            "generated by the language model."
+        reasons = risk.get(
+            "reasons",
+            []
         )
 
 
-        for reason in risk.get(
-            "reasons",
-            []
-        ):
+        if reasons:
 
-            st.success(
-                f"✓ {reason}"
+            for reason in reasons:
+
+                st.info(
+                    f"• {reason}"
+                )
+
+        else:
+
+            st.info(
+                "No specific risk indicators were triggered."
             )
 
 
         # ====================================================
-        # CAMPAIGN CONNECTIONS
+        # EVIDENCE SUMMARY
+        # ====================================================
+
+        evidence_summary = risk.get(
+            "evidence_summary",
+            {}
+        )
+
+
+        if evidence_summary:
+
+            with st.expander(
+                "🔬 Evidence used by the risk engine"
+            ):
+
+                e1, e2, e3 = st.columns(3)
+
+                with e1:
+
+                    st.metric(
+                        "Phones",
+                        evidence_summary.get(
+                            "phones",
+                            0
+                        )
+                    )
+
+                    st.metric(
+                        "UPI IDs",
+                        evidence_summary.get(
+                            "upi_ids",
+                            0
+                        )
+                    )
+
+                    st.metric(
+                        "URLs",
+                        evidence_summary.get(
+                            "urls",
+                            0
+                        )
+                    )
+
+                with e2:
+
+                    st.metric(
+                        "Amounts",
+                        evidence_summary.get(
+                            "amounts",
+                            0
+                        )
+                    )
+
+                    st.metric(
+                        "Authorities",
+                        evidence_summary.get(
+                            "authorities",
+                            0
+                        )
+                    )
+
+                with e3:
+
+                    st.metric(
+                        "Historical Connections",
+                        evidence_summary.get(
+                            "historical_connections",
+                            0
+                        )
+                    )
+
+
+        # ====================================================
+        # HISTORICAL INTELLIGENCE
         # ====================================================
 
         st.divider()
 
-        st.header("🕸️ Campaign Intelligence")
+        st.subheader(
+            "🗄️ Historical Intelligence"
+        )
 
 
         if connections:
 
-            st.error(
-                f"Found {len(connections)} connection(s) "
-                "to previously identified scam patterns."
+            st.success(
+                f"Found {len(connections)} historical "
+                f"connection(s) in the database."
             )
 
 
-            for connection in connections[:10]:
+            for index, connection in enumerate(
+                connections,
+                start=1
+            ):
 
                 with st.expander(
-                    f"{connection['complaint_id']} — "
-                    f"{connection['connection_score']}% connection"
+                    f"Case #{connection.get('db_id')} — "
+                    f"Connection strength "
+                    f"{connection.get('connection_score', 0)}/100"
                 ):
 
                     st.write(
@@ -652,48 +825,88 @@ with tab1:
                     )
 
                     st.write(
-                        f"**Previous Risk:** "
-                        f"{connection.get('risk_score', 0)}/100"
-                    )
-
-                    st.write(
                         f"**Severity:** "
                         f"{connection.get('severity', 'Unknown')}"
                     )
 
                     st.write(
-                        f"**Observed:** "
-                        f"{connection.get('occurrence_count', 1)} time(s)"
+                        f"**Historical Occurrences:** "
+                        f"{connection.get('occurrence_count', 1)}"
                     )
 
                     st.write(
-                        "**Shared evidence:**"
+                        f"**Matching Evidence:** "
+                        f"{', '.join(connection.get('matching_entities', []))}"
                     )
 
-                    for entity in connection.get(
-                        "matching_entities",
-                        []
-                    ):
-
-                        st.write(
-                            f"• {entity}"
-                        )
-
                     st.write(
-                        f"**First seen:** "
+                        f"**First Seen:** "
                         f"{connection.get('first_seen', 'Unknown')}"
                     )
 
                     st.write(
-                        f"**Last seen:** "
+                        f"**Last Seen:** "
                         f"{connection.get('last_seen', 'Unknown')}"
+                    )
+
+                    st.write(
+                        "**Summary:**"
+                    )
+
+                    st.write(
+                        connection.get(
+                            "summary",
+                            ""
+                        )
                     )
 
         else:
 
-            st.success(
-                "No meaningful links to previously stored "
-                "high-risk scam patterns were found."
+            st.info(
+                "No matching historical complaints were found "
+                "in the database."
+            )
+
+
+        # ====================================================
+        # DATABASE STORAGE
+        # ====================================================
+
+        st.divider()
+
+        st.subheader(
+            "📊 Intelligence Database"
+        )
+
+
+        if risk.get(
+            "should_store",
+            False
+        ):
+
+            if saved_count is not None:
+
+                st.success(
+                    f"This evidence pattern is stored in the "
+                    f"intelligence database. "
+                    f"Current occurrence count: **{saved_count}**."
+                )
+
+                if saved_count > 1:
+
+                    st.info(
+                        "This pattern has now been reported "
+                        f"{saved_count} times. ScamSphere keeps "
+                        "it as one evidence pattern rather than "
+                        "creating duplicate records."
+                    )
+
+        else:
+
+            st.info(
+                "This complaint did not meet the persistence "
+                "threshold and was not added to the historical "
+                "intelligence database."
             )
 
 
@@ -703,51 +916,74 @@ with tab1:
 
 with tab2:
 
-    st.header("🕸️ Fraud Evidence Network")
+    st.header(
+        "🕸️ Fraud Intelligence Network"
+    )
 
     st.write(
-        "This graph shows how the current complaint is connected "
-        "to previously identified scam cases through shared "
-        "evidence such as phone numbers, UPI IDs and URLs."
+        "This graph shows relationships between the current "
+        "complaint and evidence found in historical reports."
     )
 
 
-    if st.session_state.extracted:
+    analysis = st.session_state.analysis
+
+
+    if analysis:
+
+        current_data = analysis["extracted"]
+
+        connections = analysis["connections"]
+
 
         graph = build_graph(
-            st.session_state.extracted,
-            st.session_state.connections
+            current_data,
+            connections
         )
 
 
-        if len(graph.nodes) > 1:
-
-            fig = visualize_graph(
-                graph
-            )
-
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+        fig = visualize_graph(
+            graph
+        )
 
 
-            st.caption(
-                "Connections are based on shared structured evidence "
-                "retrieved from the fraud intelligence database."
-            )
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
-        else:
 
-            st.info(
-                "Not enough linked evidence exists yet to build "
-                "a meaningful network."
-            )
+        st.divider()
+
+        st.subheader(
+            "How to read this graph"
+        )
+
+        st.markdown(
+            """
+            **CURRENT COMPLAINT**  
+            The complaint currently being investigated.
+
+            **Phone / UPI / URL nodes**  
+            Digital identifiers extracted from the complaint.
+
+            **Case nodes**  
+            Previously reported complaints from the database.
+
+            **Connections**  
+            Shared evidence such as the same phone number,
+            UPI ID, URL or other identifiers.
+
+            A cluster of multiple cases around the same identifier
+            can indicate a repeated fraud campaign.
+            """
+        )
 
     else:
 
         st.info(
-            "Analyze a complaint first to generate its evidence network."
+            "Analyze a complaint first to generate "
+            "the fraud intelligence network."
         )
 
 
@@ -757,29 +993,33 @@ with tab2:
 
 with tab3:
 
-    st.header("🤖 AI Cybercrime Copilot")
+    st.header(
+        "🤖 AI Cybercrime Copilot"
+    )
 
     st.write(
-        "Ask questions about the currently analyzed complaint, "
-        "its evidence, risk assessment and campaign connections."
+        "Ask questions about the currently analyzed case. "
+        "The Copilot receives the extracted evidence, risk "
+        "assessment and historical connections."
     )
 
 
-    if not st.session_state.extracted:
+    analysis = st.session_state.analysis
+
+
+    if not analysis:
 
         st.info(
-            "Analyze a complaint first, then ask the Copilot "
-            "about the investigation."
+            "Analyze a complaint first."
         )
 
     else:
 
-        question = st.text_area(
+        question = st.text_input(
             "Ask the Copilot",
             placeholder=(
                 "Example: Why is this complaint considered high risk?"
-            ),
-            height=100
+            )
         )
 
 
@@ -796,46 +1036,62 @@ with tab3:
 
             else:
 
-                # --------------------------------------------
-                # Give Copilot ONLY actual application evidence
-                # --------------------------------------------
-
                 context = f"""
 CURRENT COMPLAINT
------------------
-{st.session_state.complaint_text}
+{analysis["complaint"]}
 
 
 EXTRACTED EVIDENCE
-------------------
-{st.session_state.extracted}
+{analysis["extracted"]}
 
 
 DETERMINISTIC RISK ASSESSMENT
------------------------------
-{st.session_state.risk}
+{analysis["risk"]}
 
 
-DATABASE CAMPAIGN CONNECTIONS
------------------------------
-{st.session_state.connections}
+HISTORICAL DATABASE CONNECTIONS
+{analysis["connections"]}
+
+
+IMPORTANT INSTRUCTION:
+Answer using only the evidence provided above.
+Do not invent phone numbers, UPI IDs, URLs, cases,
+risk scores, historical connections or other facts.
+If the available evidence does not answer the question,
+clearly say that the information is not available.
 """
 
 
                 with st.spinner(
-                    "Analyzing investigation evidence..."
+                    "Copilot is analyzing the case..."
                 ):
 
-                    answer = ask_copilot(
-                        question,
-                        context
-                    )
+                    try:
+
+                        answer = ask_copilot(
+                            question,
+                            context
+                        )
+
+                        st.session_state.copilot_answer = answer
+
+                    except Exception as e:
+
+                        st.error(
+                            "Copilot request failed."
+                        )
+
+                        st.exception(e)
 
 
-                st.subheader(
-                    "Copilot Response"
-                )
+        if st.session_state.copilot_answer:
 
-                st.write(
-                    answer
-                )
+            st.divider()
+
+            st.subheader(
+                "💡 Copilot Response"
+            )
+
+            st.write(
+                st.session_state.copilot_answer
+            )

@@ -9,23 +9,24 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-# =========================================================
+# ============================================================
 # DATABASE CONNECTION
-# =========================================================
+# ============================================================
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
 
-# =========================================================
+# ============================================================
 # DATABASE INITIALIZATION
-# =========================================================
+# ============================================================
 
 def init_db():
 
     conn = get_connection()
     cur = conn.cursor()
 
+    # Create the complete complaints table if it does not exist.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS complaints (
             id SERIAL PRIMARY KEY,
@@ -55,7 +56,65 @@ def init_db():
         )
     """)
 
-    # Compatibility with the older database schema
+    # ========================================================
+    # MIGRATION SAFETY
+    # ========================================================
+    #
+    # CREATE TABLE IF NOT EXISTS does not modify an existing
+    # table. These ALTER statements make older databases
+    # compatible with the final schema.
+    # ========================================================
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS complaint_text TEXT
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS scam_type TEXT
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS risk_score INTEGER
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS severity TEXT
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS phone_numbers TEXT[]
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS upi_ids TEXT[]
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS urls TEXT[]
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS authority_names TEXT[]
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS amounts TEXT[]
+    """)
+
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS summary TEXT
+    """)
+
     cur.execute("""
         ALTER TABLE complaints
         ADD COLUMN IF NOT EXISTS fingerprint TEXT
@@ -63,7 +122,8 @@ def init_db():
 
     cur.execute("""
         ALTER TABLE complaints
-        ADD COLUMN IF NOT EXISTS occurrence_count INTEGER DEFAULT 1
+        ADD COLUMN IF NOT EXISTS occurrence_count INTEGER
+        DEFAULT 1
     """)
 
     cur.execute("""
@@ -78,37 +138,95 @@ def init_db():
         DEFAULT CURRENT_TIMESTAMP
     """)
 
+    cur.execute("""
+        ALTER TABLE complaints
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP
+    """)
+
+    # ========================================================
+    # FIX NULL VALUES FROM OLD SCHEMA
+    # ========================================================
+
+    cur.execute("""
+        UPDATE complaints
+        SET occurrence_count = 1
+        WHERE occurrence_count IS NULL
+    """)
+
+    cur.execute("""
+        UPDATE complaints
+        SET first_seen = CURRENT_TIMESTAMP
+        WHERE first_seen IS NULL
+    """)
+
+    cur.execute("""
+        UPDATE complaints
+        SET last_seen = CURRENT_TIMESTAMP
+        WHERE last_seen IS NULL
+    """)
+
+    cur.execute("""
+        UPDATE complaints
+        SET created_at = CURRENT_TIMESTAMP
+        WHERE created_at IS NULL
+    """)
+
+    # ========================================================
+    # INDEXES
+    # ========================================================
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_complaints_last_seen
+        ON complaints(last_seen)
+    """)
+
     conn.commit()
 
     cur.close()
     conn.close()
 
 
-# =========================================================
+# ============================================================
 # EVIDENCE FINGERPRINT
-# =========================================================
+# ============================================================
 
 def generate_fingerprint(extracted):
 
     """
     Creates a deterministic fingerprint from structured evidence.
 
-    This intentionally does NOT use the raw complaint text.
+    Raw complaint text is intentionally NOT used.
 
-    Two messages with different wording but identical core
-    evidence can therefore be recognized as the same pattern.
+    Therefore, differently worded complaints containing the same
+    core evidence can be recognized as the same scam pattern.
     """
 
     phones = sorted(
-        set(extracted.get("phone_numbers", []))
+        set(
+            extracted.get(
+                "phone_numbers",
+                []
+            )
+        )
     )
 
     upis = sorted(
-        set(extracted.get("upi_ids", []))
+        set(
+            extracted.get(
+                "upi_ids",
+                []
+            )
+        )
     )
 
     urls = sorted(
-        set(extracted.get("urls", []))
+        set(
+            extracted.get(
+                "urls",
+                []
+            )
+        )
     )
 
     authorities = sorted(
@@ -143,9 +261,9 @@ def generate_fingerprint(extracted):
     ).hexdigest()
 
 
-# =========================================================
-# SAVE OR INCREMENT
-# =========================================================
+# ============================================================
+# SAVE OR INCREMENT COMPLAINT
+# ============================================================
 
 def save_or_increment_complaint(
     extracted,
@@ -154,13 +272,14 @@ def save_or_increment_complaint(
 ):
 
     """
-    Store a high-risk complaint.
+    Store a suspicious complaint.
 
     If the exact evidence fingerprint already exists,
-    increment its occurrence count instead of creating
+    increment occurrence_count instead of creating
     another duplicate row.
 
-    Returns the current occurrence count.
+    Returns:
+        occurrence_count
     """
 
     fingerprint = generate_fingerprint(
@@ -170,9 +289,9 @@ def save_or_increment_complaint(
     conn = get_connection()
     cur = conn.cursor()
 
-    # -----------------------------------------------------
-    # Check whether this evidence pattern already exists
-    # -----------------------------------------------------
+    # ========================================================
+    # CHECK FOR EXISTING EVIDENCE PATTERN
+    # ========================================================
 
     cur.execute("""
         SELECT
@@ -186,9 +305,9 @@ def save_or_increment_complaint(
 
     existing = cur.fetchone()
 
-    # -----------------------------------------------------
-    # Existing pattern
-    # -----------------------------------------------------
+    # ========================================================
+    # EXISTING PATTERN
+    # ========================================================
 
     if existing:
 
@@ -207,8 +326,17 @@ def save_or_increment_complaint(
             WHERE id = %s
         """, (
             new_count,
-            risk.get("risk_score", 0),
-            risk.get("severity", "LOW"),
+
+            risk.get(
+                "risk_score",
+                0
+            ),
+
+            risk.get(
+                "severity",
+                "LOW"
+            ),
+
             complaint_id
         ))
 
@@ -217,11 +345,14 @@ def save_or_increment_complaint(
         cur.close()
         conn.close()
 
+        # IMPORTANT:
+        # Return ONLY the count because app.py expects
+        # saved_count to be an integer.
         return new_count
 
-    # -----------------------------------------------------
-    # New evidence pattern
-    # -----------------------------------------------------
+    # ========================================================
+    # NEW EVIDENCE PATTERN
+    # ========================================================
 
     cur.execute("""
         INSERT INTO complaints (
@@ -306,12 +437,14 @@ def save_or_increment_complaint(
     cur.close()
     conn.close()
 
+    # IMPORTANT:
+    # First occurrence = 1.
     return 1
 
 
-# =========================================================
+# ============================================================
 # FETCH ALL COMPLAINTS
-# =========================================================
+# ============================================================
 
 def get_all_complaints():
 
