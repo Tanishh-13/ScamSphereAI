@@ -17,7 +17,7 @@ UPI_PATTERN = re.compile(
 )
 
 URL_PATTERN = re.compile(
-    r"(?:https?://|www\.)[^\s<>\"]+",
+    r'(?:https?://|www\.)[^\s<>"\']+'
     re.IGNORECASE
 )
 
